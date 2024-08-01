@@ -1,0 +1,143 @@
+from bs4 import BeautifulSoup
+import requests
+import urllib.parse
+import csv
+import re
+
+meus_links = set()  # Usar um conjunto para evitar duplicatas
+n_Processo = []
+modalidade = []
+objeto = []
+situacao = []
+orgao = []
+valores = []
+
+anos = [6,7,8,9,10,11,12,13,14,15,16,17,18,20,21,22,23,24,25]  # Exemplo de anos
+max_paginas = 123  # Número máximo de páginas para scraping
+
+headers = {
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+    'Accept-Encoding': 'gzip, deflate',
+    'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Cache-Control': 'max-age=0',
+    'Connection': 'keep-alive',
+    'Cookie': '_ga=GA1.4.1043915260.1722438184; _gid=GA1.4.72087715.1722438184; ASP.NET_SessionId=dydil3d20rxjhnl2lnk043yf; _gat=1; _ga_0ZZFN4EQ4C=GS1.4.1722523423.3.1.1722524495.0.0.0',
+    'Host': 'servicos.searh.rn.gov.br',
+    'Upgrade-Insecure-Requests': '1',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36'
+}
+
+def extrair_dados_principal(url):
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        números_processos, modalidades, objetos, situacoes, orgaos, valores = [], [], [], [], [], []
+
+        tabelas = soup.find_all('table')  # Ajuste conforme a estrutura do HTML
+        for tabela in tabelas:
+            linhas = tabela.find_all('tr')
+            for linha in linhas:
+                colunas = linha.find_all('td')
+                if len(colunas) >= 7:  # Verifica se há pelo menos 7 colunas
+                    texto_N_Processo = colunas[0].getText()  
+                    texto_N_Processo += colunas[1].getText()
+                   
+                    números_processos.append(texto_N_Processo)
+                    modalidades.append(colunas[2].getText())
+                    objetos.append(colunas[3].getText())
+                    situacoes.append(colunas[4].getText())
+                    valores.append(colunas[5].getText())
+                    orgaos.append(colunas[6].getText())
+        
+        return números_processos, modalidades, objetos, situacoes, orgaos, valores
+    except requests.exceptions.RequestException as e:
+        print(f'Erro ao fazer a solicitação para o URL {url}: {e}')
+        return [], [], [], [], [], []
+
+for ano in anos:
+    print(f"Buscando dados para o ano: {ano}\n")
+    
+    for i in range(1, max_paginas + 1):
+        print(f"Página: {i}")
+        
+        url_paginacao = f'http://servicos.searh.rn.gov.br/searh/Licitacao/Paginados?pagina={i}&Idanolicitacao={ano}'
+        
+        try:
+            response = requests.get(url_paginacao, headers=headers, timeout=10)
+            response.raise_for_status()  # Verifica se houve erro na solicitação
+            print(response.status_code())
+            
+            números_processos, modalidades, objetos, situacoes, orgaos, valores = extrair_dados_principal(url_paginacao)
+            
+            # Atualiza listas globais
+            n_Processo.extend(números_processos)
+            modalidade.extend(modalidades)
+            objeto.extend(objetos)
+            situacao.extend(situacoes)
+            orgao.extend(orgaos)
+            valores.extend(valores)
+            
+            # Encontra todos os links
+            soup = BeautifulSoup(response.text, 'html.parser')  # Define o soup aqui
+            content = soup.find_all("a", href=True)
+            
+            for j in content:
+                if '/searh/Licitacao/ContratoLicitacao/' in j['href']:
+                    full_url = urllib.parse.urljoin(url_paginacao, j['href'])
+                    meus_links.add(full_url)
+            
+            print(f"Concluído: ano {ano}, página {i}")
+        except requests.exceptions.RequestException as e:
+            print(f'Erro ao fazer a solicitação para o ano {ano}, página {i}: {e}')
+
+def extrair_dados_contrato(link):
+    try:
+        response = requests.get(link, headers=headers, timeout=10)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Obtém o texto completo da página de contrato
+        texto_pagina = soup.get_text()
+        # Usa expressões regulares para extrair os dados
+        cnpj = re.search(r'CNPJ Nº (\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})', texto_pagina)
+        razao_social = re.search(r'empresa\s+([^\s]+(?:\s+[^\s]+)*)\s+inscrita', texto_pagina)
+        valor_total = re.search(r'valor total\s+equalizado\s+de\s+R\$ ([\d,.]+)', texto_pagina)
+        
+        # Formata os dados extraídos
+        dados = {
+            'cnpj': cnpj.group(1) if cnpj else None,
+            'razao_social': razao_social.group(1) if razao_social else None,
+            'valor_total': valor_total.group(1) if valor_total else None
+        }
+        
+        return dados
+    except requests.exceptions.RequestException as e:
+        print(f'Erro ao fazer a solicitação para o link {link}: {e}')
+        return {'cnpj': 'Erro', 'razao_social': 'Erro', 'valor_total': 'Erro'}
+    except Exception as e:
+        print(f'Erro ao extrair dados do link {link}: {e}')
+        return {'cnpj': 'Erro', 'razao_social': 'Erro', 'valor_total': 'Erro'}
+
+# Salva todos os dados em um único arquivo CSV
+with open('dados_completos.csv', 'w', newline='', encoding='utf-8') as file:
+    writer = csv.DictWriter(file, fieldnames=['Número do Processo Completo', 'Modalidade', 'Objeto', 'Situação', 'Órgão', 'Valor', 'CNPJ', 'Razão Social', 'Valor Total'])
+    writer.writeheader()
+    
+    for idx, link in enumerate(meus_links):
+        if idx < len(n_Processo):
+            dados_contrato = extrair_dados_contrato(link)
+            writer.writerow({
+                'Número do Processo Completo': n_Processo[idx] if idx < len(n_Processo) else None,
+                'Modalidade': modalidade[idx] if idx < len(modalidade) else None,
+                'Objeto': objeto[idx] if idx < len(objeto) else None,
+                'Situação': situacao[idx] if idx < len(situacao) else None,
+                'Órgão': orgao[idx] if idx < len(orgao) else None,
+                'Valor': valores[idx] if idx < len(valores) else None,
+                'CNPJ': dados_contrato['cnpj'],
+                'Razão Social': dados_contrato['razao_social'],
+                'Valor Total': dados_contrato['valor_total']
+            })
+print(meus_links)
+print("Todos os dados salvos em dados_completos.csv")
